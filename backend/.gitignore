@@ -1,0 +1,66 @@
+# Python cache / compiled
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments / env files
+.env
+.env.*
+env/
+venv/
+ENV/
+secrets.toml
+env.bak/
+pyvenv.cfg
+
+# Python tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Model / cache files
+.model_cache/
+.cache/
+checkpoints/
+outputs/
+*.safetensors
+*.pt
+*.bin
+*.ckpt
+*.onnx
+*.h5
+*.pkl
+
+# Frontend build / package files
+node_modules/
+.next/
+.vercel/
+out/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+# Next.js local env
+frontend/.env.local
+frontend/.env.*
+backend/.env
+backend/.env.*
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Logs / misc
+*.log
+*.out
+*.tmp
+
+# Jupyter / Colab
+.ipynb_checkpoints/
