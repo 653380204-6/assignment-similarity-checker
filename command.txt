@@ -1,0 +1,11 @@
+#การ Activate venv
+.\{ชื่อ venv}\Scripts\Activate
+
+#การ Delete venv
+rm -r {ชื่อ venv}
+
+#การ Run node
+npm run dev
+
+#การ Run Uvicorn
+uvicorn main:app --reload
