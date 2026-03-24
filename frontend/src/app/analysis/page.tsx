@@ -507,7 +507,7 @@ export default function AnalysisPage() {
 
         <div className="bg-white rounded-lg shadow-sm border p-6 h-full flex flex-col">
           <h3 className="text-lg font-semibold text-gray-900">
-            กราฟแสดงผลแต่ละช่วงการแตกกลุ่มของเอกสารและจำนวนเอกสาร
+            กราฟแสดงผลการเปลี่ยนแปลงจำนวนเอกสารตาม Threshold
           </h3>
 
           <div className="rounded-xl border bg-gray-50 p-4 flex-1 flex flex-col">
@@ -647,33 +647,34 @@ export default function AnalysisPage() {
           </div>
 
           <div className="rounded-xl border bg-gray-50 p-4 flex-1 flex flex-col">
-            <div className="flex-1 min-h-0">
-              {dendro ? (
-                <ClusterDendrogram
-                  data={dendro}
-                  threshold={threshold}
-                  displayName={displayDocName}
-                  viewportHeight={320}
-                  showCutLine={true}
-                  highlightByThreshold={true}
-                />
-              ) : (
-                <div className="rounded-lg border bg-white p-8 text-center text-gray-500 h-full flex items-center justify-center">
-                  {loadingDendro
-                    ? "กำลังโหลด Dendrogram..."
-                    : pairs.length === 0
-                      ? "ยังไม่มีผลการเปรียบเทียบ"
-                      : "ยังไม่มีข้อมูล Dendrogram"}
+            {dendro ? (
+              <>
+                <div className="flex-1 min-h-0">
+                  <ClusterDendrogram
+                    data={dendro}
+                    threshold={threshold}
+                    displayName={displayDocName}
+                    viewportHeight={320}
+                    showCutLine={true}
+                    highlightByThreshold={true}
+                  />
                 </div>
-              )}
-            </div>
-            <div className="mt-4 pt-3 border-t min-h-[1px] text-xs text-gray-700 space-y-2">
-              <p>เส้นแดงคือค่าที่เลือกอยู่ตอนนี้ {threshold.toFixed(2)}</p>
-              <p className="text-blue-600">
-                เส้นกราฟกิ่งไม้สีเขียวแสดงเอกสารที่ยังเชื่อมกันอยู่ภายใต้ค่า
-                Threshold นี้
-              </p>
-            </div>
+
+                <div className="mt-4 pt-3 border-t min-h-[1px] text-xs text-gray-700 space-y-2">
+                  <p>เส้นแดงคือค่าที่เลือกอยู่ตอนนี้ {threshold.toFixed(2)}</p>
+                  <p className="text-blue-600">
+                    เส้นกราฟกิ่งไม้สีเขียวแสดงเอกสารที่ยังเชื่อมกันอยู่ภายใต้ค่า
+                    Threshold นี้
+                  </p>
+                </div>
+              </>
+            ) : (
+              <div className="h-[320px] rounded-lg border bg-white px-6 py-5 flex items-center justify-center text-gray-500">
+                {loadingDendro
+                  ? "กำลังโหลด Dendrogram..."
+                  : "ยังไม่มีข้อมูลสำหรับแสดงกราฟกิ่งไม้"}
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -34,6 +34,7 @@ from utils import (
 )
 from vector_db import VectorDBManager
 from clustering_utils import cluster_by_threshold
+from fastapi import Request
 
 load_dotenv()
 
@@ -70,9 +71,20 @@ app = FastAPI(
     description="API for detecting plagiarism in PDF documents using text and image analysis",
 )
 
+
+@app.middleware("http")
+async def debug_origin(request: Request, call_next):
+    print("DEBUG Origin:", request.headers.get("origin"))
+    print("DEBUG Method:", request.method)
+    print("DEBUG Path:", request.url.path)
+    response = await call_next(request)
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

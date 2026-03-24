@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 
 export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-white">
+    <div className="h-screen bg-white overflow-hidden flex flex-col">
       {/* Hero Section */}
       <section className="max-w-7xl mx-auto px-6 py-20 grid grid-cols-1 lg:grid-cols-2 gap-12 items-center">
         <div>

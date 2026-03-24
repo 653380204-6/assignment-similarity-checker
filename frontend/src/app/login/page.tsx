@@ -31,7 +31,11 @@ export default function LoginPage() {
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.detail || "Failed to login");
+        if (response.status === 400 || response.status === 401) {
+          throw new Error("อีเมลหรือรหัสผ่านไม่ถูกต้อง");
+        }
+
+        throw new Error(data.detail || "เข้าสู่ระบบไม่สำเร็จ");
       }
 
       if (!data.access_token) {
@@ -74,7 +78,7 @@ export default function LoginPage() {
 
       router.replace("/dashboard");
     } catch (err: any) {
-      setError(err.message || "Login failed");
+      setError(err.message || "เข้าสู่ระบบไม่สำเร็จ");
     } finally {
       setIsLoading(false);
     }

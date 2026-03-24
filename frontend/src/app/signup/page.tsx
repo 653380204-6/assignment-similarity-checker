@@ -39,7 +39,22 @@ export default function SignupPage() {
       });
 
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Something went wrong");
+
+      if (!response.ok) {
+        const detail = String(data.detail || "").toLowerCase();
+
+        if (
+          detail.includes("already registered") ||
+          detail.includes("already exists") ||
+          detail.includes("user already registered")
+        ) {
+          throw new Error(
+            "อีเมลนี้ถูกใช้งานแล้ว กรุณาใช้อีเมลอื่นหรือเข้าสู่ระบบ",
+          );
+        }
+
+        throw new Error(data.detail || "สมัครสมาชิกไม่สำเร็จ");
+      }
 
       setSuccess("สมัครสมาชิกสำเร็จแล้ว กรุณาเข้าสู่ระบบ");
 
@@ -48,7 +63,7 @@ export default function SignupPage() {
       setPassword("");
       setConfirmPassword("");
     } catch (err: any) {
-      setError(err.message || "Signup failed");
+      setError(err.message || "สมัครสมาชิกไม่สำเร็จ");
     } finally {
       setIsLoading(false);
     }
