@@ -1816,6 +1816,7 @@ export default function DashboardPage() {
                                     : "grid-cols-2 md:grid-cols-4"
                                 }`}
                               >
+                                {/* TEXT */}
                                 {!isImageOnly && (
                                   <>
                                     <div className="bg-blue-50 rounded-xl p-3 text-center border border-blue-100">
@@ -1836,6 +1837,9 @@ export default function DashboardPage() {
                                       <div className="text-[11px] text-purple-700 font-medium">
                                         Semantic
                                       </div>
+                                      <div className="text-[10px] text-purple-500 mt-0.5">
+                                        ความหมายของข้อความ
+                                      </div>
                                     </div>
 
                                     <div className="bg-indigo-50 rounded-xl p-3 text-center border border-indigo-100">
@@ -1845,10 +1849,14 @@ export default function DashboardPage() {
                                       <div className="text-[11px] text-indigo-700 font-medium">
                                         Lexical
                                       </div>
+                                      <div className="text-[10px] text-indigo-500 mt-0.5">
+                                        คำที่เหมือนกัน
+                                      </div>
                                     </div>
                                   </>
                                 )}
 
+                                {/* IMAGE */}
                                 {!isTextOnly && (
                                   <div className="bg-green-50 rounded-xl p-3 text-center border border-green-100">
                                     <div className="text-xl font-bold text-green-600 mb-0.5 leading-none">
@@ -1857,9 +1865,13 @@ export default function DashboardPage() {
                                     <div className="text-[11px] text-green-700 font-medium">
                                       ความคล้ายรูปภาพ
                                     </div>
+                                    <div className="text-[10px] text-green-500 mt-0.5">
+                                      CLIP + pHash
+                                    </div>
                                   </div>
                                 )}
 
+                                {/* IMAGE ONLY MODE */}
                                 {isImageOnly && result.total_images > 0 && (
                                   <>
                                     <div className="bg-blue-50 rounded-xl p-3 text-center border border-blue-100">
@@ -1867,7 +1879,7 @@ export default function DashboardPage() {
                                         {formatScore(result.image_cosine_avg)}
                                       </div>
                                       <div className="text-[11px] text-blue-700 font-medium">
-                                        Cosine Avg
+                                        CLIP
                                       </div>
                                     </div>
 
@@ -1876,26 +1888,12 @@ export default function DashboardPage() {
                                         {formatScore(result.image_phash_avg)}
                                       </div>
                                       <div className="text-[11px] text-purple-700 font-medium">
-                                        pHash Avg
+                                        pHash
                                       </div>
                                     </div>
                                   </>
                                 )}
                               </div>
-
-                              {!isTextOnly && result.total_images > 0 && (
-                                <div className="mt-3 pt-3 border-t">
-                                  <div className="flex items-center justify-between text-xs text-gray-600">
-                                    <span>
-                                      <span className="font-medium">
-                                        รูปภาพที่ตรงกัน:
-                                      </span>{" "}
-                                      {result.matched_images} /{" "}
-                                      {result.total_images} รูป
-                                    </span>
-                                  </div>
-                                </div>
-                              )}
                             </div>
                           );
                         })}
