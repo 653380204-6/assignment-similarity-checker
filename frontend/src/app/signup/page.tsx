@@ -63,7 +63,18 @@ export default function SignupPage() {
       setPassword("");
       setConfirmPassword("");
     } catch (err: any) {
-      setError(err.message || "สมัครสมาชิกไม่สำเร็จ");
+      const message = String(err?.message || "").toLowerCase();
+
+      if (
+        message.includes("failed to fetch") ||
+        message.includes("networkerror") ||
+        message.includes("load failed") ||
+        message.includes("fetch")
+      ) {
+        setError("สมัครสมาชิกไม่สำเร็จ");
+      } else {
+        setError(err?.message || "สมัครสมาชิกไม่สำเร็จ");
+      }
     } finally {
       setIsLoading(false);
     }

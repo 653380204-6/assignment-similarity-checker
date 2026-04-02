@@ -31,11 +31,13 @@ export default function LoginPage() {
       const data = await response.json();
 
       if (!response.ok) {
-        if (response.status === 400 || response.status === 401) {
-          throw new Error("อีเมลหรือรหัสผ่านไม่ถูกต้อง");
+        const detail = String(data?.detail || "");
+
+        if (response.status === 401) {
+          throw new Error(detail || "อีเมลหรือรหัสผ่านไม่ถูกต้อง");
         }
 
-        throw new Error(data.detail || "เข้าสู่ระบบไม่สำเร็จ");
+        throw new Error(detail || "เข้าสู่ระบบไม่สำเร็จ");
       }
 
       if (!data.access_token) {
@@ -78,7 +80,19 @@ export default function LoginPage() {
 
       router.replace("/dashboard");
     } catch (err: any) {
-      setError(err.message || "เข้าสู่ระบบไม่สำเร็จ");
+      const message = String(err?.message || "").toLowerCase();
+
+      if (
+        message.includes("failed to fetch") ||
+        message.includes("networkerror") ||
+        message.includes("load failed") ||
+        message.includes("fetch") ||
+        message.includes("abort")
+      ) {
+        setError("เข้าสู่ระบบไม่สำเร็จ");
+      } else {
+        setError(err?.message || "เข้าสู่ระบบไม่สำเร็จ");
+      }
     } finally {
       setIsLoading(false);
     }

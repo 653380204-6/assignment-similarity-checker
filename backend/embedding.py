@@ -33,18 +33,25 @@ class EmbeddingManager:
         try:
             print("Loading LaBSE model for text embeddings")
             self.labse_model = SentenceTransformer(
-                "sentence-transformers/LaBSE", cache_folder=self.cache_dir  # ใช้ cache
+                "sentence-transformers/LaBSE",
+                cache_folder=self.cache_dir,
+                device=self._device,
             )
 
             print("Loading CLIP model for image embeddings")
             self.clip_model = CLIPModel.from_pretrained(
-                "openai/clip-vit-large-patch14", cache_dir=self.cache_dir  # ใช้ cache
-            )
+                "openai/clip-vit-large-patch14",
+                cache_dir=self.cache_dir,
+            ).to(self._device)
+
+            self.clip_model.eval()
+
             self.clip_processor = CLIPProcessor.from_pretrained(
-                "openai/clip-vit-large-patch14", cache_dir=self.cache_dir  # ใช้ cache
+                "openai/clip-vit-large-patch14",
+                cache_dir=self.cache_dir,
+                use_fast=True,
             )
 
-            # Warm up models with dummy inputs
             await self._warmup_models()
 
             self._initialized = True
@@ -97,7 +104,12 @@ class EmbeddingManager:
 
         try:
             # Generate embedding
-            embedding = self.labse_model.encode(text)
+            embedding = self.labse_model.encode(
+                text,
+                convert_to_numpy=True,
+                device=self._device,
+                show_progress_bar=False,
+            )
 
             # Convert to numpy array and normalize
             if isinstance(embedding, list):
@@ -165,7 +177,11 @@ class EmbeddingManager:
 
             # Create embeddings in batch
             embeddings = self.labse_model.encode(
-                non_empty_texts, batch_size=32, show_progress_bar=False
+                non_empty_texts,
+                batch_size=32,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                device=self._device,
             )
             embeddings = np.asarray(embeddings, dtype=np.float32)
 

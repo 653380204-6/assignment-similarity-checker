@@ -1,10 +1,11 @@
 import os
+import hashlib
 import shutil
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
-
+import traceback
 import numpy as np
 from dotenv import load_dotenv
 from fastapi import (
@@ -37,6 +38,8 @@ from clustering_utils import cluster_by_threshold
 from fastapi import Request
 
 load_dotenv()
+
+TESTING = os.getenv("TESTING") == "1"
 
 PREVIEW_EXPIRES_IN = 60 * 15
 SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
@@ -124,6 +127,235 @@ class BatchClusterReq(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     full_name: str
+
+
+def get_similarity_level_thai(score: float) -> str:
+    if score >= 0.85:
+        return "คล้ายระดับสูง"
+    elif score >= 0.80:
+        return "คล้ายระดับกลาง"
+    else:
+        return "คล้ายระดับต่ำ"
+
+
+def chunked(items: List[str], size: int = 500):
+    for i in range(0, len(items), size):
+        yield items[i : i + size]
+
+
+def make_pair_key(doc1: str, doc2: str) -> str:
+    a, b = sorted([doc1, doc2])
+    return f"{a}__{b}"
+
+
+def get_batch_record(user_id: str, batch_id: str) -> Optional[Dict[str, Any]]:
+    res = (
+        supabase_admin.from_("batches")
+        .select(
+            "batch_id, user_id, processing_mode, use_template, template_storage_path, status, created_at, updated_at"
+        )
+        .eq("user_id", user_id)
+        .eq("batch_id", batch_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def create_batch_record(
+    *,
+    user_id: str,
+    batch_id: str,
+    processing_mode: int,
+    use_template: bool,
+    template_storage_path: Optional[str],
+) -> None:
+    supabase_admin.from_("batches").insert(
+        {
+            "batch_id": batch_id,
+            "user_id": user_id,
+            "processing_mode": processing_mode,
+            "use_template": use_template,
+            "template_storage_path": template_storage_path,
+            "status": "active",
+        }
+    ).execute()
+
+
+def touch_batch(batch_id: str, user_id: str) -> None:
+    supabase_admin.from_("batches").update({"status": "active"}).eq(
+        "batch_id", batch_id
+    ).eq("user_id", user_id).execute()
+
+
+def load_template_text(
+    *,
+    temp_dir: str,
+    user_id: str,
+    batch_id: str,
+    use_template: bool,
+    template_file: Optional[UploadFile],
+    existing_batch: Optional[Dict[str, Any]],
+) -> Tuple[str, Optional[str]]:
+    if not use_template:
+        return "", None
+
+    # กรณี batch เดิม ใช้ template เดิมเสมอ
+    if existing_batch and existing_batch.get("template_storage_path"):
+        template_storage_path = existing_batch["template_storage_path"]
+        template_bytes = supabase_admin.storage.from_(BUCKET_NAME).download(
+            template_storage_path
+        )
+
+        temp_template_path = os.path.join(temp_dir, "__template__.pdf")
+        with open(temp_template_path, "wb") as f:
+            f.write(template_bytes)
+
+        template_text = pdf_processor.extract_template_text(temp_template_path)
+        return template_text, template_storage_path
+
+    # กรณี batch ใหม่ ต้องมี template_file
+    if not template_file:
+        raise HTTPException(
+            status_code=400,
+            detail="Batch นี้ใช้ template กรุณาแนบ template_file",
+        )
+
+    template_safe_name = sanitize_filename(template_file.filename or "template.pdf")
+    temp_template_path = os.path.join(temp_dir, template_safe_name)
+
+    with open(temp_template_path, "wb") as buffer:
+        template_file.file.seek(0)
+        shutil.copyfileobj(template_file.file, buffer)
+
+    with open(temp_template_path, "rb") as f:
+        template_bytes = f.read()
+
+    template_storage_path = f"{user_id}/{batch_id}/__template__.pdf"
+    supabase_admin.storage.from_(BUCKET_NAME).upload(
+        path=template_storage_path,
+        file=template_bytes,
+        file_options={
+            "content-type": "application/pdf",
+            "upsert": "true",
+        },
+    )
+
+    template_text = pdf_processor.extract_template_text(temp_template_path)
+    return template_text, template_storage_path
+
+
+def upsert_pair_result(
+    *,
+    batch_id: str,
+    user_id: str,
+    processing_mode: int,
+    result: Dict[str, Any],
+) -> None:
+    doc1 = result.get("doc_1")
+    doc2 = result.get("doc_2")
+
+    if not doc1 or not doc2:
+        return
+
+    a, b = sorted([doc1, doc2])
+
+    text_score = result.get("text_score")
+    if text_score is None:
+        text_score = result.get("text_similarity")
+
+    semantic_score = result.get("semantic_score")
+    if semantic_score is None:
+        semantic_score = result.get("semantic_similarity")
+
+    lexical_score = result.get("lexical_score")
+    if lexical_score is None:
+        lexical_score = result.get("lexical_similarity")
+
+    image_score = result.get("image_score")
+    if image_score is None:
+        image_score = result.get("image_similarity")
+
+    image_cosine_avg = result.get("image_cosine_avg")
+    image_phash_avg = result.get("image_phash_avg")
+    matched_images = result.get("matched_images")
+    total_images = result.get("total_images")
+
+    final_score = result.get("final_score")
+    if final_score is None:
+        final_score = result.get("combined_score", 0.0)
+
+    payload = {
+        "batch_id": batch_id,
+        "user_id": user_id,
+        "doc_id_1": a,
+        "doc_id_2": b,
+        "processing_mode": processing_mode,
+        "text_score": to_score01(text_score) if text_score is not None else None,
+        "semantic_score": (
+            to_score01(semantic_score) if semantic_score is not None else None
+        ),
+        "lexical_score": (
+            to_score01(lexical_score) if lexical_score is not None else None
+        ),
+        "image_score": to_score01(image_score) if image_score is not None else None,
+        "image_cosine_avg": (
+            to_score01(image_cosine_avg) if image_cosine_avg is not None else None
+        ),
+        "image_phash_avg": (
+            to_score01(image_phash_avg) if image_phash_avg is not None else None
+        ),
+        "matched_images": int(matched_images) if matched_images is not None else None,
+        "total_images": int(total_images) if total_images is not None else None,
+        "final_score": to_score01(final_score),
+        "status": "success",
+        "error": None,
+    }
+
+    supabase_admin.from_("document_pairs").upsert(
+        payload,
+        on_conflict="batch_id,pair_key",
+    ).execute()
+
+
+def load_pair_rows(user_id: str, batch_id: str) -> List[Dict[str, Any]]:
+    res = (
+        supabase_admin.from_("document_pairs")
+        .select(
+            "batch_id, user_id, doc_id_1, doc_id_2, pair_key, processing_mode, text_score, semantic_score, lexical_score, image_score, image_cosine_avg, image_phash_avg, matched_images, total_images, final_score, status, error"
+        )
+        .eq("user_id", user_id)
+        .eq("batch_id", batch_id)
+        .eq("status", "success")
+        .order("final_score", desc=True)
+        .execute()
+    )
+    return res.data or []
+
+
+def pair_row_to_result(row: Dict[str, Any]) -> Dict[str, Any]:
+    score = float(row.get("final_score") or 0.0)
+
+    return {
+        "doc_1": row["doc_id_1"],
+        "doc_2": row["doc_id_2"],
+        "processing_mode": row.get("processing_mode"),
+        "text_similarity": row.get("text_score"),
+        "semantic_similarity": row.get("semantic_score"),
+        "lexical_similarity": row.get("lexical_score"),
+        "image_similarity": row.get("image_score"),
+        "image_cosine_avg": row.get("image_cosine_avg"),
+        "image_phash_avg": row.get("image_phash_avg"),
+        "matched_images": row.get("matched_images") or 0,
+        "total_images": row.get("total_images") or 0,
+        "text_score": row.get("text_score"),
+        "semantic_score": row.get("semantic_score"),
+        "lexical_score": row.get("lexical_score"),
+        "image_score": row.get("image_score"),
+        "final_score": score,
+        "combined_score": score,
+        "level": get_similarity_level_thai(score),
+    }
 
 
 @app.get("/auth/me")
@@ -238,20 +470,21 @@ async def startup_event():
     """Initialize all components on startup"""
     global pdf_processor, embedding_manager, vector_db_manager
 
+    if TESTING:
+        print("TESTING mode skip real startup")
+        return
+
     print("Starting PDF Plagiarism Detection API...")
 
     try:
-        # Initialize embedding manager
         print("Loading embedding models")
         embedding_manager = EmbeddingManager()
         await embedding_manager.initialize()
 
-        # Initialize vector database
         print("Connecting to vector database")
         vector_db_manager = VectorDBManager()
         await vector_db_manager.initialize()
 
-        # Initialize PDF processor
         print("Setting up PDF processor")
         pdf_processor = PDFProcessor(embedding_manager)
 
@@ -448,8 +681,6 @@ async def upload_and_process_pdfs_with_auth(
     batch_id: str = Form(...),
     template_file: Optional[UploadFile] = File(None),
 ):
-    # ---------- auth header check ----------
-
     if not pdf_processor or not embedding_manager or not vector_db_manager:
         raise HTTPException(status_code=503, detail="Service not ready.")
 
@@ -457,61 +688,60 @@ async def upload_and_process_pdfs_with_auth(
         raise HTTPException(status_code=400, detail="Invalid processing mode")
 
     validate_pdf_files(files)
-    if use_template and not template_file:
-        raise HTTPException(status_code=400, detail="Template file required")
 
     temp_dir = tempfile.mkdtemp(prefix="pdf_upload_")
 
     try:
-        # ---------- template ----------
-        template_text = ""
-        if use_template and template_file:
-            template_safe_name = sanitize_filename(
-                template_file.filename or "template.pdf"
+        user_id = str(current_user.id)
+        existing_batch = get_batch_record(user_id=user_id, batch_id=batch_id)
+
+        # lock ค่า batch เดิม
+        if existing_batch:
+            locked_mode = int(existing_batch.get("processing_mode") or processing_mode)
+            locked_use_template = bool(existing_batch.get("use_template"))
+
+            if processing_mode != locked_mode:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Batch นี้ใช้ processing_mode={locked_mode} กรุณาใช้ค่าเดิม หรือเริ่ม batch ใหม่",
+                )
+
+            processing_mode = locked_mode
+            use_template = locked_use_template
+
+        template_text, template_storage_path = load_template_text(
+            temp_dir=temp_dir,
+            user_id=user_id,
+            batch_id=batch_id,
+            use_template=use_template,
+            template_file=template_file,
+            existing_batch=existing_batch,
+        )
+
+        if not existing_batch:
+            create_batch_record(
+                user_id=user_id,
+                batch_id=batch_id,
+                processing_mode=processing_mode,
+                use_template=use_template,
+                template_storage_path=template_storage_path,
             )
-            template_path = os.path.join(temp_dir, template_safe_name)
-            with open(template_path, "wb") as buffer:
-                template_file.file.seek(0)
-                shutil.copyfileobj(template_file.file, buffer)
-            template_text = pdf_processor.extract_template_text(template_path)
 
         results = []
 
         for file in files:
-            # ---------- original name (ไว้โชว์ใน UI) ----------
             original_filename = file.filename or "unnamed.pdf"
-
-            # ---------- safe name (กัน path พังตอนเขียน temp) ----------
             safe_filename = sanitize_filename(original_filename)
             file_path_str = os.path.join(temp_dir, safe_filename)
-
-            # ---------- ext ----------
             ext = Path(safe_filename).suffix.lower() or ".pdf"
 
-            # ---------- doc_id กันชน ----------
             base_id = to_ascii_id(original_filename)
             doc_id = f"{base_id}_{uuid4().hex[:8]}"
 
-            # ---------- storage key ต้องปลอดภัย (ห้ามใช้ชื่อไทย/เว้นวรรค) ----------
             storage_file = f"{doc_id}{ext}"
-            storage_path = f"{current_user.id}/{batch_id}/{storage_file}"
+            storage_path = f"{user_id}/{batch_id}/{storage_file}"
 
             try:
-                # 1) upsert แถว (สถานะ processing)
-                supabase_admin.from_("documents_duplicate").upsert(
-                    {
-                        "file_name": original_filename,  # ✅ เก็บชื่อจริง (ไทยได้) ไว้แสดงผล
-                        "doc_id": doc_id,
-                        "storage_path": storage_path,  # ✅ key ปลอดภัย
-                        "user_id": current_user.id,
-                        "status": "processing",
-                        "processing_mode": processing_mode,
-                        "batch_id": batch_id,
-                        "error": None,
-                    }
-                ).execute()
-
-                # 2) save temp file
                 with open(file_path_str, "wb") as buffer:
                     file.file.seek(0)
                     shutil.copyfileobj(file.file, buffer)
@@ -519,43 +749,96 @@ async def upload_and_process_pdfs_with_auth(
                 with open(file_path_str, "rb") as f:
                     file_content = f.read()
 
-                # 3) upload ไป Supabase Storage
-                print(
-                    f"Uploading '{original_filename}' to Supabase Storage as '{storage_file}'"
+                file_hash = hashlib.sha256(file_content).hexdigest()
+
+                duplicate_res = (
+                    supabase_admin.from_("documents_duplicate")
+                    .select("doc_id, file_name")
+                    .eq("user_id", user_id)
+                    .eq("batch_id", batch_id)
+                    .eq("file_hash", file_hash)
+                    .limit(1)
+                    .execute()
                 )
-                supabase_admin.storage.from_("assignments").upload(
+
+                if duplicate_res.data:
+                    duplicate_row = duplicate_res.data[0]
+
+                    results.append(
+                        {
+                            "doc_id": duplicate_row.get("doc_id"),
+                            "file_name": original_filename,
+                            "status": "duplicate",
+                            "message": f"ไฟล์นี้มีอยู่ในชุดนี้แล้ว คือ {duplicate_row.get('file_name')}",
+                            "batch_id": batch_id,
+                        }
+                    )
+
+                    print(
+                        f"⚠️ Duplicate file skipped: {original_filename} "
+                        f"matches existing doc_id={duplicate_row.get('doc_id')}"
+                    )
+                    continue
+
+                supabase_admin.from_("documents_duplicate").insert(
+                    {
+                        "file_name": original_filename,
+                        "doc_id": doc_id,
+                        "storage_path": storage_path,
+                        "user_id": user_id,
+                        "status": "processing",
+                        "processing_mode": processing_mode,
+                        "batch_id": batch_id,
+                        "file_hash": file_hash,
+                        "error": None,
+                    }
+                ).execute()
+
+                supabase_admin.storage.from_(BUCKET_NAME).upload(
                     path=storage_path,
                     file=file_content,
                     file_options={
                         "content-type": "application/pdf",
-                        "upsert": "true",  # ✅ ต้องเป็น str ไม่ใช่ bool
+                        "upsert": "true",
                     },
                 )
 
-                # 4) process pdf
-                print(f"Processing PDF content for '{doc_id}'")
                 metadata = await pdf_processor.process_pdf(
                     pdf_path=file_path_str,
                     doc_id=doc_id,
                     processing_mode=processing_mode,
                     template_text=template_text,
                     vector_db=vector_db_manager,
-                    user_id=current_user.id,
+                    user_id=user_id,
                     batch_id=batch_id,
                 )
 
-                # 5) update success ✅ (แก้บั๊กเดิม)
-                update_data = {
-                    "status": "success",
-                    "text_length": metadata.get("text_length"),
-                    "image_count": metadata.get("image_count"),
-                    "removed_text_length": metadata.get("removed_text_length"),
-                    "error": None,
-                }
+                supabase_admin.from_("documents_duplicate").update(
+                    {
+                        "status": "success",
+                        "text_length": metadata.get("text_length"),
+                        "image_count": metadata.get("image_count"),
+                        "removed_text_length": metadata.get("removed_text_length"),
+                        "error": None,
+                    }
+                ).eq("doc_id", doc_id).eq("user_id", user_id).eq(
+                    "batch_id", batch_id
+                ).execute()
 
-                supabase_admin.from_("documents_duplicate").update(update_data).eq(
-                    "doc_id", doc_id
-                ).eq("user_id", current_user.id).eq("batch_id", batch_id).execute()
+                # ลง batch_files ด้วย จะได้มีประวัติไฟล์ใน batch
+                try:
+                    supabase_admin.from_("batch_files").insert(
+                        {
+                            "batch_id": batch_id,
+                            "user_id": user_id,
+                            "file_hash": file_hash,
+                            "processing_mode": processing_mode,
+                            "doc_id": doc_id,
+                            "filename": original_filename,
+                        }
+                    ).execute()
+                except Exception as batch_file_error:
+                    print("[WARN] batch_files insert failed:", batch_file_error)
 
                 results.append(
                     {
@@ -573,12 +856,14 @@ async def upload_and_process_pdfs_with_auth(
                 error_message = str(e)
                 print(f"❌ Error on '{doc_id}': {error_message}")
 
-                # update error เฉพาะแถวนี้
-                supabase_admin.from_("documents_duplicate").update(
-                    {"status": "error", "error": error_message}
-                ).eq("doc_id", doc_id).eq("user_id", current_user.id).eq(
-                    "batch_id", batch_id
-                ).execute()
+                try:
+                    supabase_admin.from_("documents_duplicate").update(
+                        {"status": "error", "error": error_message}
+                    ).eq("doc_id", doc_id).eq("user_id", user_id).eq(
+                        "batch_id", batch_id
+                    ).execute()
+                except Exception:
+                    pass
 
                 results.append(
                     {
@@ -590,7 +875,15 @@ async def upload_and_process_pdfs_with_auth(
                     }
                 )
 
-        return {"message": "All files processed", "results": results}
+        touch_batch(batch_id=batch_id, user_id=user_id)
+
+        return {
+            "message": "All files processed",
+            "batch_id": batch_id,
+            "processing_mode": processing_mode,
+            "use_template": use_template,
+            "results": results,
+        }
 
     finally:
         cleanup_temp_dir(temp_dir)
@@ -664,18 +957,12 @@ async def compare_documents_in_batch(
     if not pdf_processor or not vector_db_manager:
         raise HTTPException(status_code=503, detail="Service not ready")
 
-    user_id = current_user.id
+    user_id = str(current_user.id)
     print(f"\n========== COMPARISON REQUEST ==========")
     print(f"User ID: {user_id}")
     print(f"Batch ID: {batch_id}")
 
-    # helper: chunk list
-    def chunked(items: List[str], size: int = 500):
-        for i in range(0, len(items), size):
-            yield items[i : i + size]
-
     try:
-        # 0) ดึงรายการเอกสารจาก DB (ชัวร์สุด)
         docs = (
             supabase_admin.from_("documents_duplicate")
             .select(
@@ -683,7 +970,7 @@ async def compare_documents_in_batch(
             )
             .eq("user_id", user_id)
             .eq("batch_id", batch_id)
-            .neq("status", "error")
+            .eq("status", "success")
             .order("created_at", desc=True)
             .execute()
         ).data or []
@@ -692,7 +979,6 @@ async def compare_documents_in_batch(
             print(f"⚠️ Need at least 2 documents, found {len(docs)}")
             return []
 
-        # เอา doc_id แบบไม่ซ้ำ (กันกรณี upsert/หลายแถว)
         seen = set()
         docs_unique = []
         for d in docs:
@@ -708,11 +994,9 @@ async def compare_documents_in_batch(
         all_doc_ids = [d["doc_id"] for d in docs_unique]
         print(f"📋 Document IDs (from DB): {all_doc_ids}")
 
-        # 1) สร้าง IDs เพื่อ fetch จาก Pinecone แบบตรง ๆ
         text_ids = [f"text_{doc_id}" for doc_id in all_doc_ids]
 
         image_ids = []
-        image_count_map = {}
         mode_map = {}
         storage_map = {}
 
@@ -723,23 +1007,17 @@ async def compare_documents_in_batch(
             storage_map[doc_id] = d.get("storage_path")
 
             n = int(d.get("image_count") or 0)
-            image_count_map[doc_id] = n
-
-            # สร้าง id รูปตาม image_count
             for i in range(n):
                 image_ids.append(f"image_{doc_id}_{i}")
 
-        # 2) fetch text vectors
         text_embeddings_raw: Dict[str, np.ndarray] = {}
         if text_ids:
             for batch in chunked(text_ids, 500):
                 res = vector_db_manager.text_index.fetch(ids=batch)
                 if getattr(res, "vectors", None):
                     for vid, v in res.vectors.items():
-                        # v.values is list[float]
                         text_embeddings_raw[vid] = np.array(v.values, dtype=np.float32)
 
-        # 3) fetch image vectors + phash จาก metadata (ไม่ต้อง fetch ทีละรูป)
         image_embeddings_raw: Dict[str, np.ndarray] = {}
         image_hashes_raw: Dict[str, str] = {}
 
@@ -756,17 +1034,12 @@ async def compare_documents_in_batch(
             f"📊 Retrieved(fetch): {len(text_embeddings_raw)} text, {len(image_embeddings_raw)} image vectors"
         )
 
-        # 4) กรอง doc ที่ “มี embedding ครบตามโหมด” กัน compare พัง
-        # - mode 1 ต้องมี text
-        # - mode 2 ต้องมี image อย่างน้อย 1
-        # - mode 3 ขอมีอย่างน้อยอย่างใดอย่างหนึ่ง (แต่ปกติควรมีทั้งคู่ถ้าประมวลผลครบ)
         doc_has_text = set(
             [k[5:] for k in text_embeddings_raw.keys() if k.startswith("text_")]
         )
 
         doc_has_image = set()
         for vid in image_embeddings_raw.keys():
-            # vid: image_{doc_id}_{i}  (doc_id อาจมี _ ได้)
             remaining = vid[6:]
             parts = remaining.split("_")
             if len(parts) >= 2:
@@ -796,7 +1069,6 @@ async def compare_documents_in_batch(
 
         print(f"✅ Effective docs for compare: {effective_doc_ids}")
 
-        # 5) โหลด text จาก storage เฉพาะ doc ที่ต้องใช้ text
         print("\n📚 Loading document texts from Supabase Storage...")
         doc_texts = {}
         doc_metadata = {}
@@ -809,9 +1081,9 @@ async def compare_documents_in_batch(
 
                 if need_text and storage_path:
                     try:
-                        file_data = supabase_admin.storage.from_(
-                            "assignments"
-                        ).download(storage_path)
+                        file_data = supabase_admin.storage.from_(BUCKET_NAME).download(
+                            storage_path
+                        )
 
                         with tempfile.NamedTemporaryFile(
                             suffix=".pdf", delete=False
@@ -846,53 +1118,72 @@ async def compare_documents_in_batch(
                 doc_texts[doc_id] = ""
                 doc_metadata[doc_id] = {"processing_mode": 1}
 
-        # 6) อัปเดต pdf_processor cache
         for doc_id, text in doc_texts.items():
             pdf_processor.raw_texts[doc_id] = text
             pdf_processor.document_metadata[doc_id] = doc_metadata.get(
                 doc_id, {"processing_mode": 3}
             )
 
-        # 7) เตรียมข้อมูลเข้า compare
-        text_embeddings_for_compare = text_embeddings_raw
-        image_embeddings_for_compare = image_embeddings_raw
-        image_hashes_for_compare = image_hashes_raw
+        existing_rows = load_pair_rows(user_id=user_id, batch_id=batch_id)
+        existing_keys = {
+            row.get("pair_key") or make_pair_key(row["doc_id_1"], row["doc_id_2"]): row
+            for row in existing_rows
+        }
 
-        # 8) เปรียบเทียบทุกคู่
-        comparison_results = []
-        total_pairs = (len(effective_doc_ids) * (len(effective_doc_ids) - 1)) // 2
-        print(f"\n🔄 Starting {total_pairs} comparisons...")
-
+        missing_pairs = []
         for i in range(len(effective_doc_ids)):
             for j in range(i + 1, len(effective_doc_ids)):
                 id1, id2 = effective_doc_ids[i], effective_doc_ids[j]
-                print(f"\n  Comparing: {id1} vs {id2}")
+                key = make_pair_key(id1, id2)
+                if key not in existing_keys:
+                    missing_pairs.append((id1, id2))
 
-                result = pdf_processor.compare_documents(
-                    id1,
-                    id2,
-                    text_embeddings_for_compare,
-                    image_embeddings_for_compare,
-                    image_hashes_for_compare,
-                )
+        print(f"🧩 Existing pairs: {len(existing_keys)}")
+        print(f"🆕 Missing pairs: {len(missing_pairs)}")
 
-                if result:
-                    print(f"    ✓ Combined score: {result['combined_score']:.4f}")
-                    comparison_results.append(result)
-                else:
-                    print(f"    ⚠️ Comparison returned None")
-
-        sorted_results = sorted(
-            comparison_results, key=lambda x: x["combined_score"], reverse=True
+        batch_row = get_batch_record(user_id=user_id, batch_id=batch_id)
+        batch_processing_mode = (
+            int(batch_row.get("processing_mode") or 3) if batch_row else 3
         )
 
-        print(f"\n========== COMPARISON COMPLETE ==========")
-        print(f"Total comparisons: {len(sorted_results)}")
-        if sorted_results:
-            print(f"Highest score: {sorted_results[0]['combined_score']:.4f}")
-            print(f"Lowest score: {sorted_results[-1]['combined_score']:.4f}")
+        for id1, id2 in missing_pairs:
+            print(f"\n  Comparing new pair: {id1} vs {id2}")
 
-        return sorted_results
+            result = pdf_processor.compare_documents(
+                id1,
+                id2,
+                text_embeddings_raw,
+                image_embeddings_raw,
+                image_hashes_raw,
+            )
+
+            if result:
+                upsert_pair_result(
+                    batch_id=batch_id,
+                    user_id=user_id,
+                    processing_mode=batch_processing_mode,
+                    result=result,
+                )
+
+        touch_batch(batch_id=batch_id, user_id=user_id)
+
+        final_rows = load_pair_rows(user_id=user_id, batch_id=batch_id)
+        effective_set = set(effective_doc_ids)
+
+        final_results = []
+        for row in final_rows:
+            if row["doc_id_1"] in effective_set and row["doc_id_2"] in effective_set:
+                final_results.append(pair_row_to_result(row))
+
+        final_results.sort(key=lambda x: x["combined_score"], reverse=True)
+
+        print(f"\n========== COMPARISON COMPLETE ==========")
+        print(f"Total comparisons returned: {len(final_results)}")
+        if final_results:
+            print(f"Highest score: {final_results[0]['combined_score']:.4f}")
+            print(f"Lowest score: {final_results[-1]['combined_score']:.4f}")
+
+        return final_results
 
     except Exception as e:
         print(f"❌ Error during comparison: {e}")
@@ -1063,6 +1354,8 @@ async def cluster_documents(
             "clusters": clusters,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Clustering error: {e}")
         import traceback
@@ -1145,9 +1438,8 @@ async def clear_documents(current_user=Depends(get_current_user)):
     if not vector_db_manager:
         raise HTTPException(status_code=503, detail="Service not ready")
 
-    user_id = current_user.id
+    user_id = str(current_user.id)
 
-    # 1) ดึง path ทั้งหมดของ user จาก DB
     rows = (
         supabase_admin.from_("documents_duplicate")
         .select("storage_path")
@@ -1157,14 +1449,30 @@ async def clear_documents(current_user=Depends(get_current_user)):
 
     paths = [r["storage_path"] for r in rows if r.get("storage_path")]
 
-    # 2) ลบไฟล์ใน Storage
+    # ลบไฟล์ pdf และ template ใน storage
     try:
         if paths:
-            supabase_admin.storage.from_("assignments").remove(paths)
+            supabase_admin.storage.from_(BUCKET_NAME).remove(paths)
     except Exception as e:
         print("[WARN] bulk storage delete failed:", e)
 
-    # 3) ลบ vectors เฉพาะ user ใน Pinecone
+    batch_rows = (
+        supabase_admin.from_("batches")
+        .select("template_storage_path")
+        .eq("user_id", user_id)
+        .execute()
+    ).data or []
+
+    template_paths = [
+        r["template_storage_path"] for r in batch_rows if r.get("template_storage_path")
+    ]
+
+    try:
+        if template_paths:
+            supabase_admin.storage.from_(BUCKET_NAME).remove(template_paths)
+    except Exception as e:
+        print("[WARN] template storage delete failed:", e)
+
     try:
         vector_db_manager.text_index.delete(filter={"user_id": {"$eq": user_id}})
     except Exception as e:
@@ -1175,10 +1483,12 @@ async def clear_documents(current_user=Depends(get_current_user)):
     except Exception as e:
         print("[WARN] pinecone image delete failed:", e)
 
-    # 4) ลบ DB rows
+    supabase_admin.from_("document_pairs").delete().eq("user_id", user_id).execute()
+    supabase_admin.from_("batch_files").delete().eq("user_id", user_id).execute()
     supabase_admin.from_("documents_duplicate").delete().eq(
         "user_id", user_id
     ).execute()
+    supabase_admin.from_("batches").delete().eq("user_id", user_id).execute()
 
     return {"status": "ok", "message": "Deleted all documents for current user"}
 
@@ -1188,9 +1498,8 @@ async def delete_document(doc_id: str, current_user=Depends(get_current_user)):
     if not vector_db_manager:
         raise HTTPException(status_code=503, detail="Service not ready")
 
-    user_id = current_user.id
+    user_id = str(current_user.id)
 
-    # 1) หาใน DB ก่อน
     res = (
         supabase_admin.from_("documents_duplicate")
         .select("doc_id, storage_path, batch_id, image_count")
@@ -1201,7 +1510,6 @@ async def delete_document(doc_id: str, current_user=Depends(get_current_user)):
         .execute()
     )
 
-    # ถ้าไม่มีแล้ว ให้ถือว่าลบแล้ว (ไม่ error)
     if not res.data:
         return {
             "status": "ok",
@@ -1212,17 +1520,14 @@ async def delete_document(doc_id: str, current_user=Depends(get_current_user)):
     row = res.data[0]
     storage_path = row.get("storage_path")
     batch_id = row.get("batch_id")
-
     image_count = int(row.get("image_count") or 0)
 
-    # 2) ลบใน Storage
     try:
         if storage_path:
-            supabase_admin.storage.from_("assignments").remove([storage_path])
+            supabase_admin.storage.from_(BUCKET_NAME).remove([storage_path])
     except Exception as e:
         print("[WARN] storage delete failed:", e)
 
-    # 3) ลบใน Pinecone
     try:
         await vector_db_manager.delete_document_embeddings_by_ids(
             doc_id=doc_id,
@@ -1234,10 +1539,49 @@ async def delete_document(doc_id: str, current_user=Depends(get_current_user)):
     except Exception as e:
         print("[WARN] pinecone delete failed:", e)
 
-    # 4) ลบ row ใน DB
+    supabase_admin.from_("document_pairs").delete().eq("user_id", user_id).eq(
+        "batch_id", batch_id
+    ).or_(f"doc_id_1.eq.{doc_id},doc_id_2.eq.{doc_id}").execute()
+
+    supabase_admin.from_("batch_files").delete().eq("user_id", user_id).eq(
+        "batch_id", batch_id
+    ).eq("doc_id", doc_id).execute()
+
     supabase_admin.from_("documents_duplicate").delete().eq("doc_id", doc_id).eq(
         "user_id", user_id
     ).execute()
+
+    remaining = (
+        supabase_admin.from_("documents_duplicate")
+        .select("doc_id")
+        .eq("user_id", user_id)
+        .eq("batch_id", batch_id)
+        .limit(1)
+        .execute()
+    )
+
+    if not remaining.data:
+        # ลบ template ของ batch ทิ้งด้วยถ้าไม่มีเอกสารเหลือแล้ว
+        batch_row = get_batch_record(user_id=user_id, batch_id=batch_id)
+        template_storage_path = (
+            batch_row.get("template_storage_path") if batch_row else None
+        )
+
+        if template_storage_path:
+            try:
+                supabase_admin.storage.from_(BUCKET_NAME).remove(
+                    [template_storage_path]
+                )
+            except Exception as e:
+                print("[WARN] template storage delete failed:", e)
+
+        supabase_admin.from_("document_pairs").delete().eq("user_id", user_id).eq(
+            "batch_id", batch_id
+        ).execute()
+
+        supabase_admin.from_("batches").delete().eq("user_id", user_id).eq(
+            "batch_id", batch_id
+        ).execute()
 
     return {"status": "ok", "doc_id": doc_id}
 
@@ -1448,15 +1792,12 @@ async def test_filter(batch_id: str, current_user=Depends(get_current_user)):
 
 @app.get("/batches/latest")
 async def get_latest_batch(current_user=Depends(get_current_user)):
-    """
-    ใช้ตอน login ใหม่ เพื่อดึง batch ล่าสุดของ user
-    """
     try:
         res = (
-            supabase_admin.from_("documents_duplicate")
-            .select("batch_id, created_at")
-            .eq("user_id", current_user.id)
-            .order("created_at", desc=True)
+            supabase_admin.from_("batches")
+            .select("batch_id, updated_at, created_at")
+            .eq("user_id", str(current_user.id))
+            .order("updated_at", desc=True)
             .limit(1)
             .execute()
         )

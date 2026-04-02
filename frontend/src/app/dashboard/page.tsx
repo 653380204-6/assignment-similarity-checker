@@ -110,6 +110,32 @@ export default function DashboardPage() {
 
   const [pairIndex, setPairIndex] = useState<number | null>(null);
 
+  const [batchUsesTemplate, setBatchUsesTemplate] = useState<boolean | null>(
+    null,
+  );
+  const [pendingOpenUpload, setPendingOpenUpload] = useState(false);
+
+  const templateCacheKey = (batchId: string) => `batch_template:${batchId}`;
+
+  const loadBatchTemplateState = useCallback((batchId?: string | null) => {
+    if (typeof window === "undefined") return;
+
+    if (!batchId) {
+      setBatchUsesTemplate(null);
+      return;
+    }
+
+    const saved = localStorage.getItem(templateCacheKey(batchId));
+
+    if (saved === "true") {
+      setBatchUsesTemplate(true);
+    } else if (saved === "false") {
+      setBatchUsesTemplate(false);
+    } else {
+      setBatchUsesTemplate(null);
+    }
+  }, []);
+
   // ===== Helpers (cache keys) =====
   const compareCacheKey = (batchId: string) => `compare_cache:${batchId}`;
 
@@ -139,12 +165,30 @@ export default function DashboardPage() {
   }, [documents]);
 
   // ล็อกโหมดเมื่อ batch มีเอกสารแล้ว
-  const modeLocked = useMemo(() => {
-    return !!effectiveBatchId && documents.length > 0;
-  }, [effectiveBatchId, documents.length]);
+  const batchHasDocuments = useMemo(
+    () => documents.length > 0,
+    [documents.length],
+  );
 
-  const uploadLocked = useMemo(() => documents.length > 0, [documents.length]);
-  const lockMessage = "กรุณาลบเอกสารในระบบออกก่อน";
+  const modeLocked = useMemo(() => {
+    return !!effectiveBatchId && batchHasDocuments;
+  }, [effectiveBatchId, batchHasDocuments]);
+
+  const templateLocked = useMemo(() => {
+    return !!effectiveBatchId && batchHasDocuments;
+  }, [effectiveBatchId, batchHasDocuments]);
+
+  const activeModeForTemplate = currentBatchMode ?? processingMode;
+  const imageModeNoTemplate = activeModeForTemplate === 2;
+  const templateDisabled = templateLocked || imageModeNoTemplate;
+  const mustUploadTemplate = !templateDisabled && useTemplate && !templateFile;
+
+  const uploadLocked = false;
+
+  const modeLockMessage = "โหมดของชุดนี้ถูกล็อกไว้จนกว่าจะลบเอกสารทั้งหมด";
+  const templateLockMessage = imageModeNoTemplate
+    ? "โหมดรูปภาพเท่านั้นไม่รองรับ Template"
+    : "Template ของชุดนี้ถูกล็อกไว้จนกว่าจะลบเอกสารทั้งหมด";
 
   const getModeText = (mode: number) => {
     switch (mode) {
@@ -161,15 +205,18 @@ export default function DashboardPage() {
 
   const onSelectMode = (m: number) => {
     if (modeLocked && currentBatchMode && m !== currentBatchMode) {
-      const ok = confirm(
-        `ชุดงานนี้ถูกล็อกเป็นโหมด "${getModeText(currentBatchMode)}"\n` +
-          `ต้องการเปลี่ยนเป็น "${getModeText(m)}" ไหม?\n\n` +
-          `ถ้าต้องการ ระบบจะเริ่ม "ชุดงานใหม่" ให้`,
+      alert(
+        `ชุดงานนี้ใช้โหมด ${getModeText(currentBatchMode)} อยู่แล้ว กรุณาลบเอกสารทั้งหมดก่อนหากต้องการเปลี่ยนโหมด`,
       );
-      if (!ok) return;
-      startNewBatch();
+      return;
     }
+
     setProcessingMode(m);
+
+    if (m === 2) {
+      setUseTemplate(false);
+      setTemplateFile(null);
+    }
   };
 
   const normalizeKey = (s: string) => (s || "").trim().replace(/\.pdf$/i, "");
@@ -352,25 +399,17 @@ export default function DashboardPage() {
   };
 
   // Dropzone handlers
-  const onDrop = useCallback(
-    (acceptedFiles: File[]) => {
-      if (uploadLocked) {
-        alert(lockMessage);
-        return;
-      }
+  const onDrop = useCallback((acceptedFiles: File[]) => {
+    const pdfFiles = acceptedFiles.filter(
+      (file) => file.type === "application/pdf",
+    );
 
-      const pdfFiles = acceptedFiles.filter(
-        (file) => file.type === "application/pdf",
-      );
+    if (pdfFiles.length !== acceptedFiles.length) {
+      alert("กรุณาอัปโหลดเฉพาะไฟล์ PDF เท่านั้น");
+    }
 
-      if (pdfFiles.length !== acceptedFiles.length) {
-        alert("กรุณาอัปโหลดเฉพาะไฟล์ PDF เท่านั้น");
-      }
-
-      setFiles((prev) => [...prev, ...pdfFiles]);
-    },
-    [uploadLocked, lockMessage],
-  );
+    setFiles((prev) => [...prev, ...pdfFiles]);
+  }, []);
 
   const onTemplateDrop = useCallback((acceptedFiles: File[]) => {
     const pdfFile = acceptedFiles.find(
@@ -388,9 +427,9 @@ export default function DashboardPage() {
     accept: { "application/pdf": [".pdf"] },
     multiple: true,
     noClick: true,
-    noDrag: uploadLocked,
-    noKeyboard: uploadLocked,
-    disabled: uploadLocked,
+    noDrag: false,
+    noKeyboard: false,
+    disabled: false,
   });
 
   const {
@@ -402,11 +441,32 @@ export default function DashboardPage() {
     onDrop: onTemplateDrop,
     accept: { "application/pdf": [".pdf"] },
     multiple: false,
-    noClick: uploadLocked,
-    noDrag: uploadLocked,
-    noKeyboard: uploadLocked,
-    disabled: uploadLocked,
+    noClick: templateLocked,
+    noDrag: templateLocked,
+    noKeyboard: templateLocked,
+    disabled: templateLocked,
   });
+
+  useEffect(() => {
+    loadBatchTemplateState(effectiveBatchId);
+  }, [effectiveBatchId, loadBatchTemplateState]);
+
+  useEffect(() => {
+    if (batchHasDocuments) {
+      setUseTemplate(!!batchUsesTemplate);
+    }
+  }, [batchHasDocuments, batchUsesTemplate]);
+
+  useEffect(() => {
+    if (activeTab === "upload" && pendingOpenUpload) {
+      const id = window.requestAnimationFrame(() => {
+        open();
+        setPendingOpenUpload(false);
+      });
+
+      return () => window.cancelAnimationFrame(id);
+    }
+  }, [activeTab, pendingOpenUpload, open]);
 
   const getCurrentBatchId = () => activeBatchId || lastBatchId;
 
@@ -424,13 +484,6 @@ export default function DashboardPage() {
 
     return b;
   };
-
-  useEffect(() => {
-    if (documents.length > 0) {
-      setFiles([]);
-      setTemplateFile(null);
-    }
-  }, [documents.length]);
 
   // Load saved data
   useEffect(() => {
@@ -518,25 +571,27 @@ export default function DashboardPage() {
 
   // API handlers
   const handleCompare = useCallback(
-    async (batchId: string) => {
+    async (batchId: string, forceRefresh: boolean = false) => {
       setBusy(true);
       setIsComparing(true);
 
       try {
-        const cached = sessionStorage.getItem(compareCacheKey(batchId));
-        if (cached) {
-          try {
-            const parsed = JSON.parse(cached);
-            if (Array.isArray(parsed)) {
-              setComparisonResults(parsed);
-              setActiveBatchId(batchId);
-              setLastBatchId(batchId);
-              sessionStorage.setItem("last_batch_id", batchId);
-              setActiveTab("compare");
-              await fetchDocuments(batchId);
-              return;
-            }
-          } catch {}
+        if (!forceRefresh) {
+          const cached = sessionStorage.getItem(compareCacheKey(batchId));
+          if (cached) {
+            try {
+              const parsed = JSON.parse(cached);
+              if (Array.isArray(parsed)) {
+                setComparisonResults(parsed);
+                setActiveBatchId(batchId);
+                setLastBatchId(batchId);
+                sessionStorage.setItem("last_batch_id", batchId);
+                setActiveTab("compare");
+                await fetchDocuments(batchId);
+                return;
+              }
+            } catch {}
+          }
         }
 
         const res = await api.get(`/compare`, {
@@ -588,13 +643,10 @@ export default function DashboardPage() {
   }, [documents, activeBatchId, lastBatchId, handleCompare]);
 
   const handleUpload = useCallback(async () => {
-    if (uploadLocked) {
-      alert(lockMessage);
-      return;
-    }
-
     if (files.length === 0) return alert("กรุณาเลือกไฟล์ก่อนอัปโหลด");
-    if (useTemplate && !templateFile) return alert("กรุณาอัปโหลดไฟล์ Template");
+    if (mustUploadTemplate) {
+      return alert("กรุณาอัปโหลดไฟล์ Template");
+    }
 
     const token = sessionStorage.getItem("access_token");
     if (!token) {
@@ -611,13 +663,10 @@ export default function DashboardPage() {
       if (!batchId) batchId = startNewBatch();
 
       if (batchMode && batchMode !== processingMode) {
-        const ok = confirm(
-          `ชุดงานปัจจุบันเป็นโหมด ${getModeText(batchMode)}\n` +
-            `แต่คุณเลือกอัปโหลดเป็น ${getModeText(processingMode)}\n\n` +
-            `ต้องการเริ่มชุดใหม่อัตโนมัติไหม`,
+        alert(
+          `ชุดงานนี้ใช้โหมด ${getModeText(batchMode)} อยู่แล้ว กรุณาลบเอกสารทั้งหมดก่อนหากต้องการเปลี่ยนโหมด`,
         );
-        if (!ok) return;
-        batchId = startNewBatch();
+        return;
       }
 
       const formData = new FormData();
@@ -640,10 +689,21 @@ export default function DashboardPage() {
       if (response.status === 200 && response.data) {
         setUploadResults(response.data.results || []);
         setFiles([]);
+        setTemplateFile(null);
+
+        localStorage.setItem(
+          templateCacheKey(batchId),
+          useTemplate ? "true" : "false",
+        );
+        setBatchUsesTemplate(useTemplate);
 
         setActiveBatchId(batchId);
         setLastBatchId(batchId);
         sessionStorage.setItem("last_batch_id", batchId);
+
+        // สำคัญมาก ล้างผล compare เก่าของ batch นี้
+        setComparisonResults(null);
+        clearCompareCaches(batchId);
 
         await fetchDocuments(batchId);
         setShowUploadResultModal(true);
@@ -667,11 +727,8 @@ export default function DashboardPage() {
     templateFile,
     router,
     fetchDocuments,
-    activeBatchId,
-    lastBatchId,
     batchMode,
-    uploadLocked,
-    lockMessage,
+    clearCompareCaches,
   ]);
 
   const handleClearAll = async () => {
@@ -695,15 +752,19 @@ export default function DashboardPage() {
       setComparisonResults(null);
       setFiles([]);
       setTemplateFile(null);
+      setUseTemplate(false);
       setLastBatchId(null);
       setActiveBatchId(null);
       setSelectedDocId(null);
       setActiveTab("upload");
+      setBatchUsesTemplate(null);
 
-      if (b) sessionStorage.removeItem(compareCacheKey(b));
+      if (b) {
+        localStorage.removeItem(templateCacheKey(b));
+        clearCompareCaches(b);
+      }
+
       sessionStorage.removeItem("last_batch_id");
-      sessionStorage.removeItem("last_compare_results");
-      sessionStorage.removeItem("last_compare_batch_id");
 
       await fetchDocuments(undefined);
 
@@ -734,7 +795,14 @@ export default function DashboardPage() {
       await api.delete(`/documents/${docId}`);
 
       const b = activeBatchId || lastBatchId;
-      await fetchDocuments(b ?? undefined);
+      const docsAfterDelete = await fetchDocuments(b ?? undefined);
+
+      if (b && docsAfterDelete.length === 0) {
+        localStorage.removeItem(templateCacheKey(b));
+        setBatchUsesTemplate(null);
+        setUseTemplate(false);
+        setTemplateFile(null);
+      }
 
       setComparisonResults(null);
       clearCompareCaches(b);
@@ -923,7 +991,6 @@ export default function DashboardPage() {
   const DocumentSidebar = () => {
     return (
       <div className="bg-white rounded-lg shadow border border-gray-100 flex flex-col lg:max-h-[calc(100vh-180px)]">
-        {/* Header */}
         <div className="p-4 border-b border-gray-200">
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-sm font-bold text-gray-900">เอกสารในระบบ</h3>
@@ -937,14 +1004,93 @@ export default function DashboardPage() {
               <RefreshCw className="w-4 h-4" />
             </button>
           </div>
+
           {documents.length > 0 && (
-            <p className="text-xs text-gray-600">
-              {documents.length} ไฟล์พร้อมเปรียบเทียบ
-            </p>
+            <>
+              <p className="text-xs text-gray-600">
+                {documents.length} ไฟล์พร้อมเปรียบเทียบ
+              </p>
+
+              <div className="mt-2 flex flex-wrap gap-2">
+                <span
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border ${
+                    batchUsesTemplate
+                      ? "bg-blue-50 text-blue-700 border-blue-200"
+                      : "bg-gray-50 text-gray-600 border-gray-200"
+                  }`}
+                >
+                  {batchUsesTemplate ? (
+                    <CheckCircle className="w-3.5 h-3.5" />
+                  ) : (
+                    <XCircle className="w-3.5 h-3.5" />
+                  )}
+                  {batchUsesTemplate ? "ใช้ Template" : "ไม่ใช้ Template"}
+                </span>
+
+                {currentBatchMode && (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium border bg-gray-50 text-gray-700 border-gray-200">
+                    {getModeIcon(currentBatchMode)}
+                    {getModeText(currentBatchMode)}
+                  </span>
+                )}
+              </div>
+            </>
           )}
+
+          <div className="mt-4 space-y-2">
+            <button
+              data-testid="compare-button"
+              onClick={handleProcessAndCompare}
+              disabled={busy || isComparing || documents.length < 2}
+              className="w-full px-3 py-2.5 text-sm font-semibold rounded-lg text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
+            >
+              {isComparing ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  กำลังเปรียบเทียบ...
+                </>
+              ) : (
+                <>
+                  <Play className="w-4 h-4" />
+                  เปรียบเทียบเอกสาร
+                </>
+              )}
+            </button>
+
+            {documents.length > 0 && (
+              <button
+                onClick={() => {
+                  setActiveTab("upload");
+                  setPendingOpenUpload(true);
+                }}
+                className="w-full px-3 py-2.5 text-sm font-semibold rounded-lg text-blue-700 bg-blue-50 border border-blue-200 hover:bg-blue-100 transition flex items-center justify-center gap-2"
+              >
+                <Upload className="w-4 h-4" />
+                อัปโหลดเอกสารเพิ่มเติม
+              </button>
+            )}
+
+            {documents.length < 2 && (
+              <div className="p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
+                <p className="text-xs text-yellow-800 text-center flex items-center justify-center gap-1">
+                  <AlertTriangle className="w-3 h-3" />
+                  ต้องมีอย่างน้อย 2 เอกสาร
+                </p>
+              </div>
+            )}
+
+            {documents.length > 0 && (
+              <button
+                onClick={handleClearAll}
+                className="w-full px-3 py-2 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition flex items-center justify-center gap-2"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                ลบเอกสารทั้งหมด
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Body */}
         <div className="p-4 flex-1 overflow-hidden flex flex-col">
           {documents.length === 0 ? (
             <div className="text-center py-10">
@@ -955,125 +1101,76 @@ export default function DashboardPage() {
               <p className="text-xs text-gray-500">อัปโหลดไฟล์เพื่อเริ่มต้น</p>
             </div>
           ) : (
-            <>
-              {/* Quick actions */}
-              <div className="mb-4 space-y-2">
-                <button
-                  onClick={handleProcessAndCompare}
-                  disabled={busy || isComparing || documents.length < 2}
-                  className="w-full px-3 py-2.5 text-sm font-semibold rounded-lg text-white bg-green-600 hover:bg-green-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
-                >
-                  {isComparing ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      กำลังเปรียบเทียบ...
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-4 h-4" />
-                      เปรียบเทียบเอกสาร
-                    </>
-                  )}
-                </button>
-
-                {documents.length >= 2 && (
-                  <p className="text-xs text-gray-500 text-center"></p>
-                )}
-
-                {documents.length < 2 && (
-                  <div className="p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
-                    <p className="text-xs text-yellow-800 text-center flex items-center justify-center gap-1">
-                      <AlertTriangle className="w-3 h-3" />
-                      ต้องมีอย่างน้อย 2 เอกสาร
-                    </p>
-                  </div>
-                )}
-
-                {/* Delete All Button */}
-                {documents.length > 0 && (
-                  <button
-                    onClick={handleClearAll}
-                    className="w-full px-3 py-2 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition flex items-center justify-center gap-2"
+            <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
+              {documents.map((doc, idx) => {
+                const active = selectedDocId === doc.doc_id;
+                return (
+                  <div
+                    key={`${doc.doc_id}-${idx}`}
+                    className={`relative group p-3 rounded-lg border transition ${
+                      active
+                        ? "border-blue-400 bg-blue-50"
+                        : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
+                    }`}
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    ลบเอกสารทั้งหมด
-                  </button>
-                )}
-              </div>
-
-              {/* Documents List */}
-              <div className="flex-1 min-h-0 overflow-y-auto space-y-2 pr-1">
-                {documents.map((doc, idx) => {
-                  const active = selectedDocId === doc.doc_id;
-                  return (
-                    <div
-                      key={`${doc.doc_id}-${idx}`}
-                      className={`relative group p-3 rounded-lg border transition ${
-                        active
-                          ? "border-blue-400 bg-blue-50"
-                          : "border-gray-200 hover:border-gray-300 hover:bg-gray-50"
-                      }`}
+                    <button
+                      onClick={() =>
+                        setSelectedDocId(active ? null : doc.doc_id)
+                      }
+                      className="w-full text-left"
                     >
-                      <button
-                        onClick={() =>
-                          setSelectedDocId(active ? null : doc.doc_id)
-                        }
-                        className="w-full text-left"
-                      >
-                        <div className="flex items-center gap-3">
-                          <div
-                            className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${
-                              active ? "bg-blue-100" : "bg-gray-100"
+                      <div className="flex items-center gap-3">
+                        <div
+                          className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${
+                            active ? "bg-blue-100" : "bg-gray-100"
+                          }`}
+                        >
+                          <FileText
+                            className={`w-5 h-5 ${
+                              active ? "text-blue-600" : "text-gray-600"
                             }`}
-                          >
-                            <FileText
-                              className={`w-5 h-5 ${
-                                active ? "text-blue-600" : "text-gray-600"
-                              }`}
-                            />
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-semibold text-gray-900 truncate">
-                              {doc.file_name || doc.doc_id || "ไม่ทราบชื่อไฟล์"}
-                            </p>
-                            <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-xs text-gray-500 flex items-center gap-1">
-                                {getModeIcon(doc.processing_mode)}
-                                {getModeText(doc.processing_mode)}
-                              </span>
-                            </div>
-                            {doc.cached && (
-                              <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded">
-                                ⚡ Cache
-                              </span>
-                            )}
-                          </div>
+                          />
                         </div>
-                      </button>
-
-                      {/* Delete Button (appears on hover) */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteDocument(doc.doc_id);
-                        }}
-                        className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg"
-                        title="ลบเอกสาร"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-
-                      {doc.status === "error" && (
-                        <div className="mt-2 text-xs text-red-600 flex items-center gap-1">
-                          <XCircle className="w-3 h-3" />
-                          ผิดพลาด
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-gray-900 truncate">
+                            {doc.file_name || doc.doc_id || "ไม่ทราบชื่อไฟล์"}
+                          </p>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-xs text-gray-500 flex items-center gap-1">
+                              {getModeIcon(doc.processing_mode)}
+                              {getModeText(doc.processing_mode)}
+                            </span>
+                          </div>
+                          {doc.cached && (
+                            <span className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 text-xs font-medium bg-green-100 text-green-700 rounded">
+                              ⚡ Cache
+                            </span>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </>
+                      </div>
+                    </button>
+
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteDocument(doc.doc_id);
+                      }}
+                      className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5 text-red-600 hover:text-red-700 hover:bg-red-50 rounded-lg"
+                      title="ลบเอกสาร"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+
+                    {doc.status === "error" && (
+                      <div className="mt-2 text-xs text-red-600 flex items-center gap-1">
+                        <XCircle className="w-3 h-3" />
+                        ผิดพลาด
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           )}
         </div>
       </div>
@@ -1152,22 +1249,26 @@ export default function DashboardPage() {
 
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                       <div
-                        title={uploadLocked ? lockMessage : ""}
-                        className={uploadLocked ? "cursor-not-allowed" : ""}
+                        title={
+                          modeLocked && currentBatchMode !== 1
+                            ? modeLockMessage
+                            : ""
+                        }
+                        className={
+                          modeLocked && currentBatchMode !== 1
+                            ? "cursor-not-allowed"
+                            : ""
+                        }
                       >
                         <button
                           onClick={() => onSelectMode(1)}
-                          disabled={
-                            uploadLocked ||
-                            (modeLocked && currentBatchMode !== 1)
-                          }
+                          disabled={modeLocked && currentBatchMode !== 1}
                           className={`w-full p-4 border-2 rounded-lg text-left transition ${
                             processingMode === 1
                               ? "border-blue-500 bg-blue-50"
                               : "border-gray-200 hover:border-gray-300"
                           } ${
-                            uploadLocked ||
-                            (modeLocked && currentBatchMode !== 1)
+                            modeLocked && currentBatchMode !== 1
                               ? "opacity-50 cursor-not-allowed"
                               : ""
                           }`}
@@ -1185,22 +1286,26 @@ export default function DashboardPage() {
                       </div>
 
                       <div
-                        title={uploadLocked ? lockMessage : ""}
-                        className={uploadLocked ? "cursor-not-allowed" : ""}
+                        title={
+                          modeLocked && currentBatchMode !== 2
+                            ? modeLockMessage
+                            : ""
+                        }
+                        className={
+                          modeLocked && currentBatchMode !== 2
+                            ? "cursor-not-allowed"
+                            : ""
+                        }
                       >
                         <button
                           onClick={() => onSelectMode(2)}
-                          disabled={
-                            uploadLocked ||
-                            (modeLocked && currentBatchMode !== 2)
-                          }
+                          disabled={modeLocked && currentBatchMode !== 2}
                           className={`w-full p-4 border-2 rounded-lg text-left transition ${
                             processingMode === 2
                               ? "border-blue-500 bg-blue-50"
                               : "border-gray-200 hover:border-gray-300"
                           } ${
-                            uploadLocked ||
-                            (modeLocked && currentBatchMode !== 2)
+                            modeLocked && currentBatchMode !== 2
                               ? "opacity-50 cursor-not-allowed"
                               : ""
                           }`}
@@ -1218,22 +1323,26 @@ export default function DashboardPage() {
                       </div>
 
                       <div
-                        title={uploadLocked ? lockMessage : ""}
-                        className={uploadLocked ? "cursor-not-allowed" : ""}
+                        title={
+                          modeLocked && currentBatchMode !== 3
+                            ? modeLockMessage
+                            : ""
+                        }
+                        className={
+                          modeLocked && currentBatchMode !== 3
+                            ? "cursor-not-allowed"
+                            : ""
+                        }
                       >
                         <button
                           onClick={() => onSelectMode(3)}
-                          disabled={
-                            uploadLocked ||
-                            (modeLocked && currentBatchMode !== 3)
-                          }
+                          disabled={modeLocked && currentBatchMode !== 3}
                           className={`w-full p-4 border-2 rounded-lg text-left transition ${
                             processingMode === 3
                               ? "border-blue-500 bg-blue-50"
                               : "border-gray-200 hover:border-gray-300"
                           } ${
-                            uploadLocked ||
-                            (modeLocked && currentBatchMode !== 3)
+                            modeLocked && currentBatchMode !== 3
                               ? "opacity-50 cursor-not-allowed"
                               : ""
                           }`}
@@ -1258,17 +1367,17 @@ export default function DashboardPage() {
                     <div className="px-6 py-3 flex items-center">
                       <label
                         className={`flex items-center gap-2 select-none ${
-                          uploadLocked
+                          templateDisabled
                             ? "cursor-not-allowed opacity-60"
                             : "cursor-pointer"
                         }`}
-                        title={uploadLocked ? lockMessage : ""}
+                        title={templateDisabled ? templateLockMessage : ""}
                       >
                         <input
                           type="checkbox"
                           id="useTemplate"
                           checked={useTemplate}
-                          disabled={uploadLocked}
+                          disabled={templateDisabled}
                           onChange={(e) => setUseTemplate(e.target.checked)}
                           className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 disabled:cursor-not-allowed"
                         />
@@ -1278,13 +1387,36 @@ export default function DashboardPage() {
                       </label>
                     </div>
 
-                    {documents.length > 0 && (
-                      <p className="px-6 pb-3 text-xs text-gray-500 -mt-1">
-                        หมายเหตุ Template จะมีผลกับไฟล์ที่อัปโหลดใหม่เท่านั้น
-                      </p>
-                    )}
+                    {imageModeNoTemplate ? (
+                      <div className="px-6 pb-3 space-y-1 -mt-1">
+                        <p className="text-xs font-medium text-gray-700">
+                          โหมดรูปภาพเท่านั้นไม่รองรับ Template
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          Template ใช้ได้เฉพาะโหมดข้อความ และ ข้อความ + รูปภาพ
+                        </p>
+                      </div>
+                    ) : documents.length > 0 ? (
+                      <div className="px-6 pb-3 space-y-1 -mt-1">
+                        <p
+                          className={`text-xs font-medium ${
+                            batchUsesTemplate
+                              ? "text-blue-700"
+                              : "text-gray-600"
+                          }`}
+                        >
+                          {batchUsesTemplate
+                            ? "Batch นี้ใช้ Template อยู่"
+                            : "Batch นี้ไม่ได้ใช้ Template"}
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          หลังเริ่มประมวลผล ระบบจะซ่อนช่องอัปโหลด Template
+                          และใช้ค่าของ batch นี้ต่อไป
+                        </p>
+                      </div>
+                    ) : null}
 
-                    {useTemplate && (
+                    {useTemplate && !templateDisabled && (
                       <div className="px-6 pb-4">
                         <div
                           {...getTemplateRootProps()}
@@ -1294,7 +1426,10 @@ export default function DashboardPage() {
                               : "border-gray-300 bg-white hover:border-gray-400 cursor-pointer"
                           }`}
                         >
-                          <input {...getTemplateInputProps()} />
+                          <input
+                            {...getTemplateInputProps()}
+                            data-testid="template-input"
+                          />
                           {templateFile ? (
                             <div className="flex items-center justify-between">
                               <div className="flex items-center min-w-0">
@@ -1337,36 +1472,24 @@ export default function DashboardPage() {
                   </div>
 
                   {/* Drop Zone */}
-                  <div
-                    title={uploadLocked ? lockMessage : ""}
-                    className={uploadLocked ? "cursor-not-allowed" : ""}
-                  >
+                  <div>
                     <div
                       {...getRootProps({
                         onClick: (e) => {
                           e.preventDefault();
-                          if (!uploadLocked) open();
+                          open();
                         },
                       })}
                       className={`border-2 border-dashed rounded-lg p-16 text-center transition mb-6 flex-1 min-h-0 flex flex-col justify-center ${
-                        uploadLocked
-                          ? "border-gray-200 bg-gray-100 opacity-60 cursor-not-allowed"
-                          : isDragActive
-                            ? "border-blue-400 bg-blue-50 cursor-pointer"
-                            : "border-gray-300 bg-gray-50 hover:border-gray-400 cursor-pointer"
+                        isDragActive
+                          ? "border-blue-400 bg-blue-50 cursor-pointer"
+                          : "border-gray-300 bg-gray-50 hover:border-gray-400 cursor-pointer"
                       }`}
                     >
-                      <input {...getInputProps()} />
+                      <input {...getInputProps()} data-testid="upload-input" />
                       <Upload className="w-16 h-16 text-gray-400 mx-auto mb-4" />
 
-                      {uploadLocked ? (
-                        <div>
-                          <p className="text-xl text-gray-500 mb-2 font-medium">
-                            ไม่สามารถอัปโหลดไฟล์เพิ่มได้
-                          </p>
-                          <p className="text-sm text-gray-500">{lockMessage}</p>
-                        </div>
-                      ) : isDragActive ? (
+                      {isDragActive ? (
                         <p className="text-xl text-blue-600 font-medium">
                           วางไฟล์ PDF ที่นี่...
                         </p>
@@ -1457,9 +1580,7 @@ export default function DashboardPage() {
                               setShowFileModal(false);
                               handleUpload();
                             }}
-                            disabled={
-                              uploadLocked || files.length === 0 || busy
-                            }
+                            disabled={files.length === 0 || busy}
                             className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-5 py-2 rounded-lg font-semibold transition"
                           >
                             อัปโหลดไฟล์
@@ -1471,22 +1592,17 @@ export default function DashboardPage() {
 
                   {/* Upload Button */}
 
-                  <div
-                    title={uploadLocked ? lockMessage : ""}
-                    className={uploadLocked ? "cursor-not-allowed" : ""}
-                  >
+                  <div>
                     <button
+                      data-testid="upload-button"
                       onClick={() => {
-                        if (uploadLocked) return;
                         if (files.length === 0) {
                           open();
                           return;
                         }
                         handleUpload();
                       }}
-                      disabled={
-                        uploadLocked || busy || (useTemplate && !templateFile)
-                      }
+                      disabled={busy || mustUploadTemplate}
                       className="w-full flex items-center justify-center px-6 py-4 text-lg font-semibold rounded-lg text-white bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition"
                     >
                       {busy ? (
@@ -1502,7 +1618,9 @@ export default function DashboardPage() {
                       ) : (
                         <>
                           <Upload className="w-6 h-6 mr-2" />
-                          อัปโหลดไฟล์
+                          {documents.length > 0
+                            ? "อัปโหลดเอกสารเพิ่มเติม"
+                            : "อัปโหลดไฟล์"}
                         </>
                       )}
                     </button>
@@ -1513,7 +1631,10 @@ export default function DashboardPage() {
               )}
 
               {showUploadResultModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+                <div
+                  data-testid="upload-success-modal"
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+                >
                   <div className="bg-white rounded-xl w-full max-w-xl shadow-lg">
                     {/* Header */}
                     <div className="flex items-center justify-between px-6 py-4 border-b">
