@@ -6,8 +6,7 @@
 
 - Supabase project
 - Pinecone account และ index
-- ไฟล์ `schema.sql`
-- ไฟล์ `data.sql` ถ้าต้องการนำข้อมูลเดิมกลับมาใช้
+- ไฟล์ `setup_database.sql`
 - Frontend และ Backend ของโปรเจคนี้
 
 ## ภาพรวมสถาปัตยกรรม
@@ -49,16 +48,16 @@
 
 ## 3 ตั้งค่า Database Schema
 
-ถ้าคุณมีไฟล์ `schema.sql` อยู่แล้ว ให้ import เข้าไปใน Supabase project ใหม่
+ถ้าคุณมีไฟล์ `setup_database.sql` อยู่แล้ว ให้ import เข้าไปใน Supabase project ใหม่
 
 ### วิธีที่ง่ายสุดผ่านหน้าเว็บ
 
 1. เปิด `SQL Editor`
 2. สร้าง query ใหม่
-3. วางเนื้อหาจากไฟล์ `schema.sql`
+3. วางเนื้อหาจากไฟล์ `setup_database.sql`
 4. กด Run
 
-ไฟล์ `schema.sql` ของโปรเจคนี้จะสร้างองค์ประกอบสำคัญ เช่น
+ไฟล์ `setup_database.sql` ของโปรเจคนี้จะสร้างองค์ประกอบสำคัญ เช่น
 
 - extension ที่ระบบใช้
 - ตาราง `public."User"`
@@ -71,28 +70,11 @@
 - indexes foreign keys grants และการเปิดใช้ RLS
 
 > หมายเหตุ
-> ถ้า `schema.sql` ของคุณอ้างถึง Supabase schemas เช่น `auth.users` หรือ extensions ของ Supabase ควร import ใน Supabase project จะเหมาะที่สุด
+> ถ้า `setup_database.sql` ของคุณอ้างถึง Supabase schemas เช่น `auth.users` หรือ extensions ของ Supabase ควร import ใน Supabase project จะเหมาะที่สุด
 
-## 4 นำข้อมูลเดิมกลับมาใช้
+ไฟล์นี้ใช้สำหรับสร้างโครงสร้างฐานข้อมูลที่ระบบต้องใช้ เช่น ตาราง ฟังก์ชัน trigger view index และความสัมพันธ์ต่าง ๆ โดยไม่ได้รวมข้อมูลเดิมในตาราง
 
-ถ้าคุณมีไฟล์ `data.sql` และต้องการนำข้อมูลเดิมกลับมาใช้
-
-### กรณีข้อมูลไม่ใหญ่มาก
-
-สามารถทดลอง import ผ่าน `SQL Editor` ได้โดย
-
-1. เปิด `SQL Editor`
-2. สร้าง query ใหม่
-3. วางเนื้อหาจาก `data.sql`
-4. กด Run
-
-### กรณีข้อมูลเยอะ
-
-แนะนำให้ใช้เครื่องมือภายนอกเช่น `psql` ในการ import เพื่อให้เสถียรกว่า
-
-ถ้าคุณยังไม่มี `data.sql` แต่มีแค่ `schema.sql` ระบบจะได้เฉพาะโครงสร้างตาราง ไม่ได้ข้อมูลเดิม
-
-## 5 ตารางหลักของระบบ
+## 4 ตารางหลักของระบบ
 
 ตารางที่สำคัญในโปรเจคนี้ได้แก่
 
@@ -135,7 +117,7 @@
 - `final_score`
 - สถานะการประมวลผล
 
-## 6 Authentication ใน Supabase
+## 5 Authentication ใน Supabase
 
 โปรเจคนี้อ้างอิง `auth.users` ของ Supabase ดังนั้นควรเปิดใช้งาน Auth ใน project
 
@@ -147,7 +129,7 @@
 
 จาก schema ของโปรเจคนี้มี function `handle_new_user()` สำหรับเพิ่มข้อมูลผู้ใช้เข้าสู่ตาราง `public."User"`
 
-## 7 Storage ที่ควรมีใน Supabase
+## 6 Storage ที่ควรมีใน Supabase
 
 แม้ไฟล์นี้เน้น database แต่ระบบของคุณยังต้องใช้ **Storage bucket** สำหรับเก็บ PDF ด้วย
 
@@ -159,7 +141,7 @@
 
 ข้อมูลที่เชื่อมกับ storage จะถูกเก็บในตาราง เช่น `documents_duplicate.storage_path`
 
-## 8 ตั้งค่า Pinecone
+## 7 ตั้งค่า Pinecone
 
 ระบบนี้ไม่ได้ใช้แค่ database อย่างเดียว แต่ยังต้องมี vector database สำหรับ embeddings ด้วย
 
@@ -171,7 +153,7 @@
 
 Backend จะใช้ Pinecone เพื่อเก็บ embeddings ของข้อความและรูปภาพที่สกัดจาก PDF
 
-## 9 ตัวอย่าง Environment Variables
+## 8 ตัวอย่าง Environment Variables
 
 ## Frontend `.env.local`
 
@@ -202,21 +184,20 @@ FRONTEND_ORIGINS=http://localhost:3000
 > หมายเหตุ
 > ชื่อ environment variables จริงอาจต่างกันเล็กน้อยตามโครงสร้าง backend ของคุณ ให้ตรวจสอบจากไฟล์ config หรือไฟล์ที่เรียก `os.getenv()` ใน backend อีกครั้ง
 
-## 10 ขั้นตอนแนะนำในการตั้งค่าระบบใหม่
+## 9 ขั้นตอนแนะนำในการตั้งค่าระบบใหม่
 
 1. สร้าง Supabase project
 2. ตั้งค่า Auth ให้พร้อมใช้งาน
 3. สร้าง bucket สำหรับเก็บไฟล์ PDF
-4. import `schema.sql`
-5. import `data.sql` ถ้ามี
-6. สร้าง Pinecone index
-7. ตั้งค่า `.env` ของ backend
-8. ตั้งค่า `.env.local` ของ frontend
-9. รัน backend
-10. รัน frontend
-11. ทดสอบ login upload และ compare
+4. import `setup_database.sql`
+5. สร้าง Pinecone index
+6. ตั้งค่า `.env` ของ backend
+7. ตั้งค่า `.env.local` ของ frontend
+8. รัน backend
+9. รัน frontend
+10. ทดสอบ login upload และ compare
 
-## 11 วิธีตรวจสอบว่า setup สำเร็จ
+## 10 วิธีตรวจสอบว่า setup สำเร็จ
 
 ### ฝั่ง Supabase
 
@@ -245,12 +226,12 @@ FRONTEND_ORIGINS=http://localhost:3000
 - เรียกดูเอกสารใน batch
 - เรียกผล compare ได้
 
-## 12 ปัญหาที่พบบ่อย
+## 11 ปัญหาที่พบบ่อย
 
-### import schema แล้ว error เรื่อง extension
+### import setup database แล้ว error เรื่อง extension
 ให้ตรวจสอบว่า import ใน Supabase project ไม่ใช่ PostgreSQL ทั่วไป
 
-### import schema แล้ว error เรื่อง `auth.users`
+### import setup database แล้ว error เรื่อง `auth.users`
 แปลว่าปลายทางอาจไม่มี Supabase Auth schema ครบ หรือไม่ได้อยู่ใน Supabase environment
 
 ### login ได้แต่ backend เข้าถึงข้อมูลไม่ได้
@@ -262,31 +243,30 @@ FRONTEND_ORIGINS=http://localhost:3000
 ### เปรียบเทียบเอกสารไม่ได้
 ให้ตรวจสอบว่า Pinecone ถูกตั้งค่าถูกต้อง และ backend อ่านค่า API key ได้
 
-## 13 ข้อแนะนำด้านความปลอดภัย
+## 12 ข้อแนะนำด้านความปลอดภัย
 
 - อย่า commit secret keys ลง Git repository
 - อย่าแชร์ service role key ต่อสาธารณะ
 - ควรเก็บ `.env` ไว้นอก version control
 - ถ้าเผลอแชร์ database password หรือ API key ให้รีเซ็ตทันที
 
-## 14 ไฟล์ที่ควรมีในโปรเจค
+## 13 ไฟล์ที่ควรมีในโปรเจค
 
 ```text
 assignment-similarity-checker-dev/
 ├─ frontend/
 ├─ backend/
-├─ schema.sql
-├─ data.sql
+├─ setup_database.sql
 ├─ README.md
 └─ README_DATABASE_SETUP.md
 ```
 
-## 15 สรุป
+## 14 สรุป
 
 ถ้าคุณต้องการให้โปรเจคนี้ทำงานได้ครบ ควรเตรียมอย่างน้อย
 
 - Supabase project
-- database schema
+- setup database script
 - storage bucket
 - auth settings
 - Pinecone index
